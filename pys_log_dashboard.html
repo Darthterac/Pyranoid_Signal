@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PyranoidSignal - Log Analyzer</title>
+
+    <!-- DataTables -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+    <link rel="stylesheet" href="https://cdn.datatables.net/responsive/2.5.0/css/responsive.dataTables.min.css">
+
+    <style>
+        :root {
+            --bg: #1e1e2e;
+            --panel: #2a2a3e;
+            --accent: #7aa2f7;
+            --text: #cdd6f4;
+            --green: #9ece6a;
+            --red: #f7768e;
+            --yellow: #e0af68;
+            --muted: #7f849c;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: auto;
+        }
+
+        h1 {
+            color: var(--accent);
+            border-bottom: 2px solid var(--panel);
+            padding-bottom: 10px;
+        }
+
+        .controls {
+            background: var(--panel);
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        input[type="file"] {
+            color: var(--text);
+        }
+
+        table.dataTable {
+            background-color: var(--panel) !important;
+            color: var(--text) !important;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        table.dataTable thead th {
+            background-color: #313244 !important;
+            color: var(--accent) !important;
+            border-bottom: 1px solid var(--accent) !important;
+        }
+
+        .dataTables_wrapper .dataTables_filter input,
+        .dataTables_wrapper .dataTables_length select {
+            background-color: var(--panel);
+            color: var(--text);
+            border: 1px solid var(--accent);
+            padding: 5px;
+            border-radius: 4px;
+        }
+
+        .exe-link {
+            color: var(--yellow);
+            text-decoration: none;
+            font-weight: bold;
+            cursor: pointer;
+            border-bottom: 1px dotted var(--muted);
+        }
+
+        .exe-link:hover {
+            text-decoration: underline;
+            color: var(--accent);
+        }
+
+        .ip-link {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: bold;
+            border-bottom: 1px dotted var(--muted);
+        }
+
+        .ip-link:hover {
+            color: var(--yellow);
+            text-decoration: underline;
+        }
+
+        .status-tag {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-weight: bold;
+        }
+
+        .status-tcp {
+            background: #313244;
+            color: var(--accent);
+        }
+
+        .status-udp {
+            background: #313244;
+            color: var(--yellow);
+        }
+
+        .alert-true {
+            color: var(--red);
+            font-weight: bold;
+        }
+
+        .signed-valid {
+            color: var(--green);
+            font-size: 0.9em;
+        }
+
+        .signed-invalid {
+            color: var(--red);
+            font-weight: bold;
+            font-size: 0.9em;
+        }
+
+        em {
+            color: var(--muted);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🔍 PyranoidSignal — Log Analyzer</h1>
+
+        <div class="controls">
+            <label for="csvFile">Select Log CSV:</label>
+            <input type="file" id="csvFile" accept=".csv">
+            <span id="fileInfo" style="color: var(--green);"></span>
+        </div>
+
+        <table id="logTable" class="display responsive nowrap" style="width:100%">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Mode</th>
+                    <th>Process</th>
+                    <th>Local Address</th>
+                    <th>Remote Address</th>
+                    <th>Status</th>
+                    <th>Signed</th>
+                    <th>Alert</th>
+                </tr>
+            </thead>
+
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
+    <script>
+        $(document).ready(function () {
+
+            const table = $('#logTable').DataTable({
+                order: [[0, 'desc']],
+                pageLength: 25,
+                responsive: true
+            });
+
+            // ============================================================
+            // Regex helpers
+            // ============================================================
+
+            const ipv4Regex =
+                /^(25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(\.(25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}$/;
+
+            const ipv6Regex =
+                /^(([0-9a-fA-F]{1,4}:){7}([0-9a-fA-F]{1,4}|:)|([0-9a-fA-F]{1,4}:){1,7}:|:((:[0-9a-fA-F]{1,4}){1,7}|:))$/;
+
+            // ============================================================
+            // Address parser
+            // Converts:
+            //   1.2.3.4:443
+            //   [2001:db8::1]:443
+            // Into clickable WHOIS links
+            // ============================================================
+
+            function makeAddressClickable(address) {
+
+                if (!address || address.trim() === "") {
+                    return '<em>none</em>';
+                }
+
+                let ip = "";
+                let port = "";
+
+                // IPv6 [addr]:port
+                if (address.startsWith("[")) {
+                    const match = address.match(/^\[([^\]]+)\]:(\d+)$/);
+
+                    if (match) {
+                        ip = match[1];
+                        port = match[2];
+                    }
+                }
+                else {
+                    // IPv4 ip:port
+                    const lastColon = address.lastIndexOf(":");
+
+                    if (lastColon !== -1) {
+                        ip = address.substring(0, lastColon);
+                        port = address.substring(lastColon + 1);
+                    }
+                    else {
+                        ip = address;
+                    }
+                }
+
+                const isIPv4 = ipv4Regex.test(ip);
+                const isIPv6 = ipv6Regex.test(ip);
+
+                // && !isIPv6
+                if (!isIPv4 && !isIPv6) {
+                    return address;
+                }
+
+                const whoisUrl =
+                    `https://www.whois.com/whois/${encodeURIComponent(ip)}`;
+
+                return `
+                    <a href="${whoisUrl}"
+                       target="_blank"
+                       class="ip-link"
+                       title="WHOIS lookup for ${ip}">
+                        ${ip}
+                    </a>${port ? ':' + port : ''}
+                `;
+            }
+
+            // ============================================================
+            // CSV Loader
+            // ============================================================
+
+            $('#csvFile').on('change', function (e) {
+
+                const file = e.target.files[0];
+
+                if (!file) return;
+
+                $('#fileInfo').text('Parsing ' + file.name + '...');
+
+                Papa.parse(file, {
+
+                    header: true,
+                    skipEmptyLines: true,
+
+                    complete: function (results) {
+
+                        table.clear();
+
+                        results.data.forEach(row => {
+
+                            // ====================================================
+                            // TCP vs UDP tag
+                            // ====================================================
+
+                            const isUdp = row.status === 'UDP';
+
+                            const protocolTag =
+                                `<span class="status-tag ${isUdp ? 'status-udp' : 'status-tcp'}">
+                                    ${isUdp ? 'UDP' : 'TCP'}
+                                </span>`;
+
+                            // ====================================================
+                            // Google search link for process
+                            // ====================================================
+
+                            const googleUrl =
+                                `https://www.google.com/search?q=${encodeURIComponent(row.process + " process information")}`;
+
+                            const processLink =
+                                `<a href="${googleUrl}"
+                                    target="_blank"
+                                    class="exe-link"
+                                    title="${row.exe_path}">
+                                    ${row.process}
+                                </a>`;
+
+                            // ====================================================
+                            // Alert formatting
+                            // ====================================================
+
+                            const isAlert =
+                                String(row.alert).toLowerCase() === 'true';
+
+                            const alertText = isAlert
+                                ? `<span class="alert-true">
+                                        ⚠ ${row.alert_reason}
+                                   </span>`
+                                : `<span style="color:var(--green)">✓</span>`;
+
+                            // ====================================================
+                            // Signature formatting
+                            // ====================================================
+
+                            const isSigned = row.signed === 'Valid';
+
+                            const signedText = isSigned
+                                ? `<span class="signed-valid">Verified</span>`
+                                : `<span class="signed-invalid">${row.signed}</span>`;
+
+                            // ====================================================
+                            // Clickable WHOIS links
+                            // ====================================================
+
+                            //const localAddr =
+                                //makeAddressClickable(row.local_addr);
+
+                            const remoteAddr =
+                                makeAddressClickable(row.remote_addr);
+
+                            // ====================================================
+                            // Add row //localAddr,
+                            // ====================================================
+
+                            table.row.add([
+                                row.timestamp.replace('T', ' '),
+                                protocolTag,
+                                processLink,
+                                row.local_addr, 
+                                remoteAddr,
+                                row.status,
+                                signedText,
+                                alertText
+                            ]);
+                        });
+
+                        table.draw();
+
+                        $('#fileInfo').text(
+                            'Loaded ' + results.data.length + ' entries.'
+                        );
+                    }
+                });
+            });
+        });
+    </script>
+</body>
+</html>
