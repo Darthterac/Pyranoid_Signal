@@ -239,13 +239,14 @@
                 }
 
                 const whoisUrl =
-                    `https://www.whois.com/whois/${encodeURIComponent(ip)}`;
+                    `https://whatismyipaddress.com/ip/${encodeURIComponent(ip)}`;
+                    //`https://www.whois.com/whois/${encodeURIComponent(ip)}`;
 
                 return `
                     <a href="${whoisUrl}"
                        target="_blank"
                        class="ip-link"
-                       title="WHOIS lookup for ${ip}">
+                       title="OSINT lookup for ${ip}">
                         ${ip}
                     </a>${port ? ':' + port : ''}
                 `;
